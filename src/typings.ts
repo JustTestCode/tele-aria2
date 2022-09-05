@@ -10,7 +10,7 @@ export interface TaskItem {
     length: string;
     path: string;
   }[];
-
+  infoHash: string;
   gid: string;
   downloadSpeed: string;
   totalLength: string;

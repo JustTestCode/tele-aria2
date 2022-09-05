@@ -7,6 +7,7 @@ import { TaskItem, Aria2EventTypes } from './typings';
 import {
   byte2Readable, getFilename, progress, getGidFromAction, isDownloadable,
 } from './utilities';
+import { fstat, statSync, writeFile, readFileSync } from 'fs';
 
 export default class Telegram {
   private bot: Telegraf<Context>;
@@ -21,6 +22,7 @@ export default class Telegram {
 
   private agent: HttpsProxyAgent | undefined;
 
+  private hash_history_path: string = '/hash_history.json';
   constructor(options: {
     botKey: string;
     userId: number[];
@@ -151,7 +153,31 @@ export default class Telegram {
       }
     });
   }
-
+  private initdata(ctx: Context): void {
+    let hashList: string[] = [];
+    this.aria2Server.send('tellStopped', [-1, 100000], (data) => {
+      if (Array.isArray(data)) {
+        hashList = hashList.concat(data.map((item: TaskItem) => item.infoHash));
+      }
+    }).send('tellActive', (data) => {
+      if (Array.isArray(data)) {
+        hashList = hashList.concat(data.map((item: TaskItem) => item.infoHash));
+      }
+    }).send('tellWaiting', [-1, 100000], (data) => {
+      if (Array.isArray(data)) {
+        hashList = hashList.concat(data.map((item: TaskItem) => item.infoHash));
+      }
+      hashList = Array.from(new Set(hashList));
+      writeFile(this.hash_history_path, JSON.stringify(hashList), function (err) { 
+        if(err) {
+          ctx.reply('Hash历史初始化失败');
+        } else {
+          ctx.reply('Hash历史读取成功');
+        }
+      });
+      
+    });
+  }
   private stopped(ctx: Context): void {
     this.aria2Server.send('tellStopped', [-1, this.maxIndex], (data) => {
       if (Array.isArray(data)) {
@@ -272,9 +298,16 @@ export default class Telegram {
       }
     }
   }
-
+  private getHashFromUrl(url: string): string {
+    const hash = url.match(/btih:([a-zA-Z0-9]+)/);
+    if (hash) {
+      return hash[1];
+    }
+    return '';
+  }
   private onMessage(): void {
     this.bot.on('message', (ctx) => {
+      // @ts-ignore
       const inComingText = ctx.update.message?.text;
 
       if (inComingText) {
@@ -299,15 +332,34 @@ export default class Telegram {
           case '❌ Remove task':
             this.remove(ctx);
             break;
+          case '/init':
+            this.initdata(ctx);
+            break;
           default:
             if (isDownloadable(inComingText)) {
+              let hash = this.getHashFromUrl(inComingText);
+              if (hash) {
+                if (statSync(this.hash_history_path).isFile()) {
+                  let hashList = JSON.parse(readFileSync(this.hash_history_path).toString());
+                  if (hashList.indexOf(hash) > -1) {
+                    ctx.reply('Hash已经存在,不需要重复下载,强制下载请去WebUI');
+                    return;
+                  }
+                  else {
+                    hashList.push(hash);
+                    writeFile(this.hash_history_path, JSON.stringify(hashList), function (err) { });
+                  }
+                } else {
+                  writeFile(this.hash_history_path, JSON.stringify([hash]), function (err) { });
+                }
+              }
               this.aria2Server.send('addUri', [[inComingText]]);
             } else {
               this.logger.warn(`Unable to a parse the request: ${inComingText}`);
             }
         }
       }
-
+      // @ts-ignore
       const document = ctx.update.message?.document;
 
       // Receive BT file
